@@ -28,6 +28,27 @@ let item = "Enter something below.";
 const form = () => {
   return `
   <body>
+  <style>
+body {
+  
+  background-color: lightblue;
+  background-image: url("https://tinyurl.com/39f5wwm5");
+  background-repeat: no-repeat;
+  background-size: 620px 620px;
+  background-position: center;
+}
+
+h1 {
+  color: white;
+  text-align: center;
+}
+
+p {
+  font-family: "Aclonica";
+  font-size: 20px;
+  font-color: green;
+}
+</style>
   <p>${item}</p>
   <form method="POST">
   <input name="item"></input>
@@ -62,3 +83,5 @@ const server = http.createServer((req, res) => {
 
 server.listen(3000);
 console.log("The server is listening on port 3000.");
+
+
