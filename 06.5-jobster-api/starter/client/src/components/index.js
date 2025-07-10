@@ -8,6 +8,9 @@ import Navbar from './Navbar';
 import SearchContainer from './SearchContainer';
 import SmallSidebar from './SmallSidebar';
 import StatsContainer from './StatsContainer';
+import AgentsContainer from './AgentsContainer';
+import Agent from './Agent';
+import AgentInfo from './AgentInfo';
 
 export {
   Logo,
@@ -20,4 +23,7 @@ export {
   SearchContainer,
   StatsContainer,
   ChartsContainer,
+  AgentsContainer,
+  Agent,
+  AgentInfo,
 };
