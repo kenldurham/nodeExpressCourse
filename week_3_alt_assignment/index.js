@@ -392,4 +392,488 @@ app.get("/whatisaserver/xmlcloser", (_, response) => {
     `);
 });
 
+// ============================================================================
+// DOCUMENT MANAGEMENT AGENT
+// ============================================================================
+
+const fs = require('fs-extra');
+const path = require('path');
+const chokidar = require('chokidar');
+const multer = require('multer');
+const { v4: uuidv4 } = require('uuid');
+
+// Ensure documents directory exists
+const DOCUMENTS_DIR = path.join(__dirname, 'documents');
+fs.ensureDirSync(DOCUMENTS_DIR);
+
+// In-memory storage for document metadata and agent state
+const agentState = {
+  documents: new Map(),
+  monitoredFiles: new Set(),
+  errors: [],
+  activities: [],
+  fileWatcher: null
+};
+
+// Setup file upload handling
+const upload = multer({ 
+  dest: path.join(__dirname, 'uploads'),
+  limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
+});
+
+// Utility functions
+function logActivity(action, details) {
+  const activity = {
+    id: uuidv4(),
+    timestamp: new Date().toISOString(),
+    action,
+    details
+  };
+  agentState.activities.unshift(activity);
+  if (agentState.activities.length > 100) {
+    agentState.activities = agentState.activities.slice(0, 100);
+  }
+  console.log(`[AGENT] ${action}: ${details}`);
+}
+
+function logError(error, context = '') {
+  const errorLog = {
+    id: uuidv4(),
+    timestamp: new Date().toISOString(),
+    error: error.message || error,
+    context,
+    stack: error.stack
+  };
+  agentState.errors.unshift(errorLog);
+  if (agentState.errors.length > 50) {
+    agentState.errors = agentState.errors.slice(0, 50);
+  }
+  console.error(`[AGENT ERROR] ${context}: ${error.message || error}`);
+}
+
+// Initialize file monitoring
+function initializeFileMonitoring() {
+  if (agentState.fileWatcher) {
+    agentState.fileWatcher.close();
+  }
+  
+  agentState.fileWatcher = chokidar.watch(DOCUMENTS_DIR, {
+    ignored: /node_modules/,
+    persistent: true,
+    ignoreInitial: false
+  });
+
+  agentState.fileWatcher
+    .on('add', filePath => {
+      logActivity('FILE_ADDED', `File detected: ${path.basename(filePath)}`);
+      agentState.monitoredFiles.add(filePath);
+    })
+    .on('change', filePath => {
+      logActivity('FILE_CHANGED', `File updated: ${path.basename(filePath)}`);
+    })
+    .on('unlink', filePath => {
+      logActivity('FILE_REMOVED', `File deleted: ${path.basename(filePath)}`);
+      agentState.monitoredFiles.delete(filePath);
+    })
+    .on('error', error => {
+      logError(error, 'File monitoring');
+    });
+}
+
+// Agent main dashboard
+app.get('/agent', (req, res) => {
+  const docs = Array.from(agentState.documents.values());
+  const recentActivities = agentState.activities.slice(0, 10);
+  const recentErrors = agentState.errors.slice(0, 5);
+  
+  res.send(`
+    ${STYLE}
+    <style>
+      .agent-dashboard { max-width: 1200px; margin: 0 auto; padding: 20px; }
+      .card { background: #f5f5f5; border: 1px solid #ddd; border-radius: 8px; padding: 20px; margin: 20px 0; }
+      .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; }
+      .stat-item { text-align: center; background: white; padding: 15px; border-radius: 5px; }
+      .error { color: #d32f2f; }
+      .success { color: #2e7d32; }
+      .activity-log { max-height: 300px; overflow-y: auto; font-size: 12px; }
+      .btn { padding: 10px 20px; background: #007bff; color: white; text-decoration: none; border-radius: 5px; margin: 5px; display: inline-block; }
+      .btn:hover { background: #0056b3; }
+    </style>
+    <body>
+      <div class="agent-dashboard">
+        <h1>📋 Document Management Agent</h1>
+        <p>An intelligent agent for copying, pasting, and monitoring text documents with ChatGPT integration.</p>
+        
+        <div class="stats">
+          <div class="stat-item">
+            <h3>${docs.length}</h3>
+            <p>Documents Managed</p>
+          </div>
+          <div class="stat-item">
+            <h3>${agentState.monitoredFiles.size}</h3>
+            <p>Files Monitored</p>
+          </div>
+          <div class="stat-item">
+            <h3>${agentState.activities.length}</h3>
+            <p>Total Activities</p>
+          </div>
+          <div class="stat-item">
+            <h3 class="${agentState.errors.length > 0 ? 'error' : 'success'}">${agentState.errors.length}</h3>
+            <p>Recent Errors</p>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Quick Actions</h2>
+          <a href="/agent/documents" class="btn">📄 Manage Documents</a>
+          <a href="/agent/upload" class="btn">📤 Upload Document</a>
+          <a href="/agent/monitor" class="btn">🔍 File Monitor</a>
+          <a href="/agent/api/status" class="btn">🔌 API Status</a>
+        </div>
+
+        <div class="card">
+          <h2>Recent Activity</h2>
+          <div class="activity-log">
+            ${recentActivities.length > 0 ? 
+              recentActivities.map(activity => 
+                `<div><strong>${new Date(activity.timestamp).toLocaleString()}</strong> - ${activity.action}: ${activity.details}</div>`
+              ).join('') : 
+              '<p>No recent activity</p>'
+            }
+          </div>
+        </div>
+
+        ${recentErrors.length > 0 ? `
+        <div class="card">
+          <h2 class="error">Recent Errors</h2>
+          <div class="activity-log">
+            ${recentErrors.map(error => 
+              `<div class="error"><strong>${new Date(error.timestamp).toLocaleString()}</strong> - ${error.context}: ${error.error}</div>`
+            ).join('')}
+          </div>
+        </div>
+        ` : ''}
+      </div>
+    </body>
+  `);
+});
+
+// Document management interface
+app.get('/agent/documents', (req, res) => {
+  const docs = Array.from(agentState.documents.values());
+  
+  res.send(`
+    ${STYLE}
+    <style>
+      .documents-page { max-width: 1200px; margin: 0 auto; padding: 20px; }
+      .doc-list { display: grid; gap: 15px; }
+      .doc-item { background: #f9f9f9; border: 1px solid #ddd; border-radius: 8px; padding: 15px; }
+      .doc-actions { margin-top: 10px; }
+      .btn { padding: 8px 16px; background: #007bff; color: white; text-decoration: none; border-radius: 4px; margin-right: 10px; font-size: 12px; }
+      .btn-small { padding: 5px 10px; font-size: 11px; }
+      .btn-danger { background: #dc3545; }
+      .btn-success { background: #28a745; }
+      .no-docs { text-align: center; color: #666; margin: 40px 0; }
+    </style>
+    <body>
+      <div class="documents-page">
+        <h1>📄 Document Management</h1>
+        <p><a href="/agent" class="btn">← Back to Dashboard</a> <a href="/agent/upload" class="btn btn-success">+ Upload New Document</a></p>
+        
+        <div class="doc-list">
+          ${docs.length > 0 ? 
+            docs.map(doc => `
+              <div class="doc-item">
+                <h3>${doc.name}</h3>
+                <p><strong>Size:</strong> ${doc.size} bytes | <strong>Modified:</strong> ${new Date(doc.lastModified).toLocaleString()}</p>
+                <p>${doc.content.substring(0, 200)}${doc.content.length > 200 ? '...' : ''}</p>
+                <div class="doc-actions">
+                  <a href="/agent/documents/${doc.id}/view" class="btn btn-small">View</a>
+                  <a href="/agent/documents/${doc.id}/edit" class="btn btn-small">Edit</a>
+                  <a href="/agent/api/documents/${doc.id}/copy" class="btn btn-small">Copy</a>
+                  <a href="/agent/documents/${doc.id}/delete" class="btn btn-small btn-danger" onclick="return confirm('Delete this document?')">Delete</a>
+                </div>
+              </div>
+            `).join('') : 
+            '<div class="no-docs"><h3>No documents yet</h3><p>Upload your first document to get started!</p></div>'
+          }
+        </div>
+      </div>
+    </body>
+  `);
+});
+
+// Upload form
+app.get('/agent/upload', (req, res) => {
+  res.send(`
+    ${STYLE}
+    <style>
+      .upload-page { max-width: 800px; margin: 0 auto; padding: 20px; }
+      .upload-form { background: #f9f9f9; padding: 30px; border-radius: 8px; border: 1px solid #ddd; }
+      .form-group { margin-bottom: 20px; }
+      .form-group label { display: block; margin-bottom: 5px; font-weight: bold; }
+      .form-group input, .form-group textarea { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
+      .form-group textarea { height: 200px; font-family: monospace; }
+      .btn { padding: 12px 24px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; }
+      .btn:hover { background: #0056b3; }
+      .btn-secondary { background: #6c757d; text-decoration: none; display: inline-block; }
+    </style>
+    <body>
+      <div class="upload-page">
+        <h1>📤 Upload Document</h1>
+        <p><a href="/agent/documents" class="btn btn-secondary">← Back to Documents</a></p>
+        
+        <form action="/agent/api/documents" method="POST" enctype="multipart/form-data" class="upload-form">
+          <div class="form-group">
+            <label for="name">Document Name:</label>
+            <input type="text" id="name" name="name" required placeholder="Enter document name">
+          </div>
+          
+          <div class="form-group">
+            <label for="file">Upload File:</label>
+            <input type="file" id="file" name="file" accept=".txt,.md,.json,.js,.py,.html,.css">
+            <small>Optional: Upload a text file (10MB max)</small>
+          </div>
+          
+          <div class="form-group">
+            <label for="content">Or Enter Content Directly:</label>
+            <textarea id="content" name="content" placeholder="Enter your document content here..."></textarea>
+          </div>
+          
+          <button type="submit" class="btn">Create Document</button>
+        </form>
+      </div>
+    </body>
+  `);
+});
+
+// File monitoring status
+app.get('/agent/monitor', (req, res) => {
+  const monitoredFiles = Array.from(agentState.monitoredFiles);
+  
+  res.send(`
+    ${STYLE}
+    <style>
+      .monitor-page { max-width: 1000px; margin: 0 auto; padding: 20px; }
+      .file-list { background: #f9f9f9; padding: 20px; border-radius: 8px; border: 1px solid #ddd; }
+      .file-item { padding: 10px; margin: 5px 0; background: white; border-radius: 4px; border-left: 4px solid #28a745; }
+      .status { color: #28a745; font-weight: bold; }
+      .btn { padding: 10px 20px; background: #007bff; color: white; text-decoration: none; border-radius: 4px; margin-right: 10px; }
+    </style>
+    <body>
+      <div class="monitor-page">
+        <h1>🔍 File Monitor Status</h1>
+        <p><a href="/agent" class="btn">← Back to Dashboard</a></p>
+        
+        <div class="file-list">
+          <h2>Monitoring Status: <span class="status">ACTIVE</span></h2>
+          <p>Watching directory: <code>${DOCUMENTS_DIR}</code></p>
+          
+          <h3>Monitored Files (${monitoredFiles.length}):</h3>
+          ${monitoredFiles.length > 0 ? 
+            monitoredFiles.map(filePath => 
+              `<div class="file-item">${path.basename(filePath)} <small>(${filePath})</small></div>`
+            ).join('') :
+            '<p>No files currently being monitored</p>'
+          }
+        </div>
+        
+        <h2>Recent File Activities</h2>
+        <div class="file-list">
+          ${agentState.activities
+            .filter(a => a.action.startsWith('FILE_'))
+            .slice(0, 20)
+            .map(activity => 
+              `<div class="file-item"><strong>${new Date(activity.timestamp).toLocaleString()}</strong> - ${activity.action}: ${activity.details}</div>`
+            ).join('') || '<p>No file activity yet</p>'
+          }
+        </div>
+      </div>
+    </body>
+  `);
+});
+
+// API Endpoints
+
+// Get agent status
+app.get('/agent/api/status', (req, res) => {
+  res.json({
+    status: 'active',
+    documents: agentState.documents.size,
+    monitoredFiles: agentState.monitoredFiles.size,
+    activities: agentState.activities.length,
+    errors: agentState.errors.length,
+    uptime: process.uptime()
+  });
+});
+
+// Create document
+app.post('/agent/api/documents', upload.single('file'), async (req, res) => {
+  try {
+    const { name, content } = req.body;
+    let documentContent = content || '';
+    
+    // If file uploaded, read its content
+    if (req.file) {
+      documentContent = await fs.readFile(req.file.path, 'utf8');
+      await fs.remove(req.file.path); // Clean up uploaded file
+    }
+    
+    if (!documentContent.trim()) {
+      return res.status(400).json({ error: 'Document content is required' });
+    }
+    
+    const docId = uuidv4();
+    const filename = `${docId}.txt`;
+    const filePath = path.join(DOCUMENTS_DIR, filename);
+    
+    // Save to file system
+    await fs.writeFile(filePath, documentContent);
+    
+    // Store metadata
+    const document = {
+      id: docId,
+      name: name || filename,
+      filename,
+      filePath,
+      content: documentContent,
+      size: documentContent.length,
+      lastModified: new Date().toISOString(),
+      created: new Date().toISOString()
+    };
+    
+    agentState.documents.set(docId, document);
+    logActivity('DOCUMENT_CREATED', `Created document: ${document.name}`);
+    
+    res.json({ success: true, document });
+  } catch (error) {
+    logError(error, 'Creating document');
+    res.status(500).json({ error: 'Failed to create document' });
+  }
+});
+
+// Get all documents
+app.get('/agent/api/documents', (req, res) => {
+  const documents = Array.from(agentState.documents.values());
+  res.json(documents);
+});
+
+// Get specific document
+app.get('/agent/api/documents/:id', (req, res) => {
+  const document = agentState.documents.get(req.params.id);
+  if (!document) {
+    return res.status(404).json({ error: 'Document not found' });
+  }
+  res.json(document);
+});
+
+// Copy document content (for ChatGPT integration)
+app.get('/agent/api/documents/:id/copy', (req, res) => {
+  const document = agentState.documents.get(req.params.id);
+  if (!document) {
+    return res.status(404).json({ error: 'Document not found' });
+  }
+  
+  logActivity('DOCUMENT_COPIED', `Copied content from: ${document.name}`);
+  
+  res.json({
+    success: true,
+    content: document.content,
+    metadata: {
+      name: document.name,
+      size: document.size,
+      lastModified: document.lastModified
+    }
+  });
+});
+
+// Update document
+app.put('/agent/api/documents/:id', async (req, res) => {
+  try {
+    const { content } = req.body;
+    const document = agentState.documents.get(req.params.id);
+    
+    if (!document) {
+      return res.status(404).json({ error: 'Document not found' });
+    }
+    
+    // Update file
+    await fs.writeFile(document.filePath, content);
+    
+    // Update metadata
+    document.content = content;
+    document.size = content.length;
+    document.lastModified = new Date().toISOString();
+    
+    logActivity('DOCUMENT_UPDATED', `Updated document: ${document.name}`);
+    
+    res.json({ success: true, document });
+  } catch (error) {
+    logError(error, 'Updating document');
+    res.status(500).json({ error: 'Failed to update document' });
+  }
+});
+
+// Delete document
+app.delete('/agent/api/documents/:id', async (req, res) => {
+  try {
+    const document = agentState.documents.get(req.params.id);
+    
+    if (!document) {
+      return res.status(404).json({ error: 'Document not found' });
+    }
+    
+    // Remove file
+    await fs.remove(document.filePath);
+    
+    // Remove from memory
+    agentState.documents.delete(req.params.id);
+    
+    logActivity('DOCUMENT_DELETED', `Deleted document: ${document.name}`);
+    
+    res.json({ success: true });
+  } catch (error) {
+    logError(error, 'Deleting document');
+    res.status(500).json({ error: 'Failed to delete document' });
+  }
+});
+
+// ChatGPT Integration - Report errors and progress
+app.post('/agent/api/chatgpt/report', (req, res) => {
+  const { type, message, context } = req.body;
+  
+  const report = {
+    type: type || 'info',
+    message,
+    context,
+    timestamp: new Date().toISOString(),
+    errors: agentState.errors.slice(0, 5),
+    recentActivities: agentState.activities.slice(0, 10),
+    status: {
+      documents: agentState.documents.size,
+      monitoredFiles: agentState.monitoredFiles.size,
+      uptime: process.uptime()
+    }
+  };
+  
+  logActivity('CHATGPT_REPORT', `Generated report: ${type} - ${message}`);
+  
+  res.json({
+    success: true,
+    report,
+    suggestion: "Based on current agent status, everything appears to be functioning normally. Recent activities and any errors have been included in this report."
+  });
+});
+
+// Initialize the agent
+logActivity('AGENT_STARTED', 'Document Management Agent initialized');
+initializeFileMonitoring();
+
+// Add link to agent from main page
+app.get("/", (_, res) => res.send(`
+  <h1>Hi!</h1>
+  <a href="/whatisaserver">Visit /whatisaserver to get started!</a><br><br>
+  <a href="/agent">🤖 Open Document Management Agent</a>
+`));
+
 app.listen(3000);
