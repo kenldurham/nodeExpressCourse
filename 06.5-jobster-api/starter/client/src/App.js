@@ -9,6 +9,8 @@ import {
   AllJobs,
   Stats,
   SharedLayout,
+  AllAgents,
+  AddAgent,
 } from './pages/dashboard';
 function App() {
   return (
@@ -25,6 +27,8 @@ function App() {
           <Route index element={<Stats />} />
           <Route path='all-jobs' element={<AllJobs />} />
           <Route path='add-job' element={<AddJob />} />
+          <Route path='agents' element={<AllAgents />} />
+          <Route path='add-agent' element={<AddAgent />} />
           <Route path='profile' element={<Profile />} />
         </Route>
         <Route path='landing' element={<Landing />} />
